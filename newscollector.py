@@ -1,59 +1,54 @@
-# newscollector.py
-from newspaper import Article
 import requests
+from newspaper import Article
 from bs4 import BeautifulSoup
-from langdetect import detect, LangDetectException
 
 
 class NewsCollector:
     def __init__(self, debug=False):
         self.debug = debug
 
-    def _is_english(self, text):
+    def extract_text(self, url):
+        """Extracts and cleans article text from a single URL."""
+        print(f"🌐 Fetching: {url}")
+
+        # Try Newspaper3k first
         try:
-            lang = detect(text[:500])  # detect using first 500 chars
-            return lang == "en"
-        except LangDetectException:
-            return False
-
-    def collect(self, url):
-        if self.debug:
-            print(f"📰 Collecting news from: {url}")
-
-        text = None
-
-        # Try Newspaper3k
-        try:
-            article = Article(url, language="en")
+            article = Article(url)
             article.download()
             article.parse()
             text = article.text.strip()
-        except Exception as e:
-            if self.debug:
-                print(f"⚠️ Newspaper3k failed for {url}: {e}")
 
-        # Fallback with requests + BeautifulSoup
-        if not text or len(text) < 200:
-            try:
-                resp = requests.get(url, timeout=10, headers={
-                                    "User-Agent": "Mozilla/5.0"})
-                soup = BeautifulSoup(resp.text, "html.parser")
-                paragraphs = [p.get_text() for p in soup.find_all("p")]
-                text = "\n".join(paragraphs)
-            except Exception as e:
+            if len(text) > 500:
                 if self.debug:
-                    print(f"⚠️ Fallback failed for {url}: {e}")
-                return None
+                    print(
+                        f"✅ Extracted text with Newspaper3k ({len(text)} chars)")
+                return text
+            else:
+                print("⚠️ Newspaper3k returned too little text, using fallback...")
+        except Exception as e:
+            print(f"⚠️ Newspaper3k failed for {url}: {e}")
 
-        if not text or len(text) < 200:
-            if self.debug:
-                print("⚠️ Not enough text extracted.")
-            return None
+        # Fallback: requests + BeautifulSoup
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            }
+            r = requests.get(url, headers=headers, timeout=10)
+            r.raise_for_status()
+            soup = BeautifulSoup(r.text, "html.parser")
 
-        # Language check
-        if not self._is_english(text):
-            if self.debug:
-                print("⚠️ Skipped non-English article.")
-            return None
+            paragraphs = [p.get_text(strip=True) for p in soup.find_all("p")]
+            text = "\n".join(paragraphs)
+            if len(text) > 300:
+                if self.debug:
+                    print(
+                        f"✅ Extracted text with fallback parser ({len(text)} chars)")
+                return text
+            else:
+                print(
+                    f"⚠️ Fallback parser failed for {url}: not enough content")
+        except Exception as e:
+            print(f"⚠️ Fallback parser failed for {url}: {e}")
 
-        return text
+        print(f"⚠️ No text extracted from {url}")
+        return ""

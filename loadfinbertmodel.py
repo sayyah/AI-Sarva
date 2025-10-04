@@ -1,16 +1,9 @@
-# loadfinbertmodel.py
-import os
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+import torch
 
 
 def load_finbert():
-    """Load FinBERT model and tokenizer from local path"""
-    base_dir = os.path.dirname(os.path.abspath(__file__))  # project root
-    model_path = os.path.join(base_dir, "model", "FinBERT")
+    model_path = r"G:\AI Projects\Sarva\model\FinBERT"
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     model = AutoModelForSequenceClassification.from_pretrained(model_path)
-    return tokenizer, model
-
-
-# Load them once when the module is imported
-tokenizer, model = load_finbert()
+    return model, tokenizer

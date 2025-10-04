@@ -1,46 +1,30 @@
-# decisionagent.py
 import torch
+import torch.nn.functional as F
 
 
 class DecisionAgent:
-    def __init__(self, model, tokenizer, portfolio_value=1000):
+    def __init__(self, model, tokenizer):
         self.model = model
         self.tokenizer = tokenizer
-        self.portfolio_value = portfolio_value
 
     def analyze(self, text):
         """
-        Analyze sentiment of the given text and return trading decision.
+        Analyze sentiment of the news and convert it to a trading action.
         """
-        # Use tokenizer correctly
         inputs = self.tokenizer(
             text,
             return_tensors="pt",
             truncation=True,
-            max_length=512
+            max_length=512,
+            padding=True
         )
-
         with torch.no_grad():
             outputs = self.model(**inputs)
+            probs = F.softmax(outputs.logits, dim=1)
+            sentiment = torch.argmax(probs).item()
+            confidence = float(torch.max(probs))
 
-        logits = outputs.logits
-        probs = torch.nn.functional.softmax(logits, dim=-1).squeeze()
-        label_id = torch.argmax(probs).item()
+        label_map = {0: "SHORT", 1: "HOLD", 2: "LONG"}
+        action = label_map.get(sentiment, "HOLD")
 
-        sentiment = ["negative", "neutral", "positive"][label_id]
-        confidence = probs[label_id].item()
-
-        action = "HOLD"
-        if sentiment == "positive":
-            action = "LONG"
-        elif sentiment == "negative":
-            action = "SHORT"
-
-        amount = round(self.portfolio_value * confidence, 2)
-
-        return {
-            "sentiment": sentiment,
-            "action": action,
-            "amount": amount,
-            "confidence": round(confidence, 2)
-        }
+        return action, confidence

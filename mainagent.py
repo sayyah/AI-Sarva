@@ -1,56 +1,65 @@
-# mainagent.py
 import argparse
-from loadfinbertmodel import load_finbert
-from decisionagent import DecisionAgent
-from searchagent import SearchAgent
+from transformers import BertTokenizer, BertForSequenceClassification
+import torch
 from newscollector import NewsCollector
+from calculations import calculate_trade
+from urls import URLS
+
+
+class DecisionAgent:
+    def __init__(self, model, tokenizer):
+        self.model = model
+        self.tokenizer = tokenizer
+
+    def analyze(self, text):
+        inputs = self.tokenizer(text, truncation=True,
+                                max_length=512, return_tensors="pt")
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+        probs = torch.nn.functional.softmax(outputs.logits, dim=1)
+        confidence, predicted_class = torch.max(probs, dim=1)
+        label = "LONG" if predicted_class.item() == 1 else "SHORT"
+        return label, confidence.item()
 
 
 class MainAgent:
-    def __init__(self, coin_name="BTC", portfolio_value=1000, use_search=True):
+    def __init__(self, coin_name, portfolio_value):
         self.coin_name = coin_name
         self.portfolio_value = portfolio_value
-        self.use_search = use_search
+        self.news_collector = NewsCollector(debug=True)
 
-        # Load FinBERT model + tokenizer
-        self.model, self.tokenizer = load_finbert()
-
-        # Debug check
-        print("DEBUG model type:", type(self.model))
-        print("DEBUG tokenizer type:", type(self.tokenizer))
-
-        # Agents
-        self.decision_agent = DecisionAgent(
-            self.model, self.tokenizer, portfolio_value)
-        self.search_agent = SearchAgent(coin_name)
-        self.news_collector = NewsCollector()
+        print("🔍 Loading BERT model...")
+        self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+        self.model = BertForSequenceClassification.from_pretrained(
+            "bert-base-uncased", num_labels=2)
+        self.decision_agent = DecisionAgent(self.model, self.tokenizer)
 
     def run(self):
-        print(f"🔎 Collecting URLs for {self.coin_name}...")
-
-        urls = []
-        if self.use_search:
-            urls = self.search_agent.search_news()
-        else:
-            print("⚠️ Search disabled. Provide URLs manually.")
-
+        urls = URLS.get(self.coin_name.upper(), [])
         if not urls:
-            print("⚠️ No URLs found!")
+            print(f"⚠️ No URLs found for {self.coin_name}")
             return
 
-        print(f"✅ Found {len(urls)} URLs")
-
+        print(f"🔎 Collecting {len(urls)} URLs for {self.coin_name}...\n")
         results = []
-        for url in urls:
-            print(f"📰 Collecting news from: {url}")
-            text = self.news_collector.get_article_text(url)
 
+        for url in urls:
+            text = self.news_collector.extract_text(url)
             if not text:
-                print("⚠️ No text extracted.")
                 continue
 
-            decision = self.decision_agent.analyze(text)
-            results.append({"url": url, "decision": decision})
+            action, confidence = self.decision_agent.analyze(text)
+            trade = calculate_trade(
+                action, confidence, self.portfolio_value, self.coin_name)
+
+            results.append({
+                "url": url,
+                "decision": {
+                    "action": action,
+                    "confidence": confidence,
+                    **trade
+                }
+            })
 
         print("\n✅ Final Results:")
         for r in results:
@@ -58,19 +67,10 @@ class MainAgent:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Crypto News Trading Agent")
-    parser.add_argument("--coin", type=str, required=True,
-                        help="Coin name (e.g., BTC, ETH, BNB)")
-    parser.add_argument("--portfolio", type=float,
-                        default=1000, help="Portfolio value")
-    parser.add_argument("--no-search", action="store_true",
-                        help="Disable search and require manual URLs")
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--coin", type=str, default="BNB")
+    parser.add_argument("--portfolio", type=float, default=2000)
     args = parser.parse_args()
 
-    agent = MainAgent(
-        coin_name=args.coin,
-        portfolio_value=args.portfolio,
-        use_search=not args.no_search
-    )
+    agent = MainAgent(coin_name=args.coin, portfolio_value=args.portfolio)
     agent.run()
