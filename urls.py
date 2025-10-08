@@ -1,19 +1,17 @@
 URLS = {
     "BNB": [
-        "https://crypto.news/tag/bnb/",
-        "https://coinjournal.net/news/",
-        "https://www.coindesk.com/price/binance-coin/news",
         "https://cointelegraph.com/tags/binance-coin",
-        "https://www.beincrypto.com/tag/bnb/"
+        "https://www.coindesk.com/price/binance-coin/news",
+        "https://crypto.news/tag/bnb/",
     ],
     "BTC": [
-        "https://coinjournal.net/news/",
         "https://cointelegraph.com/tags/bitcoin",
-        "https://www.coindesk.com/price/bitcoin/news"
+        "https://www.coindesk.com/price/bitcoin/news",
+        "https://crypto.news/tag/bitcoin/",
     ],
     "ETH": [
-        "https://coinjournal.net/news/",
         "https://cointelegraph.com/tags/ethereum",
-        "https://www.coindesk.com/price/ethereum/news"
+        "https://www.coindesk.com/price/ethereum/news",
+        "https://crypto.news/tag/ethereum/",
     ]
 }
