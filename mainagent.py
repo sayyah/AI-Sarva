@@ -1,76 +1,109 @@
 import argparse
 from transformers import BertTokenizer, BertForSequenceClassification
-import torch
+from decisionagent import DecisionAgent
+from technicalagent import TechnicalAgent
 from newscollector import NewsCollector
-from calculations import calculate_trade
-from urls import URLS
+from calculations import CalculateAgent
 
-
-class DecisionAgent:
-    def __init__(self, model, tokenizer):
-        self.model = model
-        self.tokenizer = tokenizer
-
-    def analyze(self, text):
-        inputs = self.tokenizer(text, truncation=True,
-                                max_length=512, return_tensors="pt")
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-        probs = torch.nn.functional.softmax(outputs.logits, dim=1)
-        confidence, predicted_class = torch.max(probs, dim=1)
-        label = "LONG" if predicted_class.item() == 1 else "SHORT"
-        return label, confidence.item()
+# Optional best coin analyzer
+from bestcoinagent import BestCoinAgent
 
 
 class MainAgent:
-    def __init__(self, coin_name, portfolio_value):
+    def __init__(self, coin_name=None, portfolio_value=1000, timeframe="4h", debug=False):
         self.coin_name = coin_name
         self.portfolio_value = portfolio_value
-        self.news_collector = NewsCollector(debug=True)
+        self.timeframe = timeframe
+        self.debug = debug
 
-        print("🔍 Loading BERT model...")
-        self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+        # Load model + tokenizer
         self.model = BertForSequenceClassification.from_pretrained(
-            "bert-base-uncased", num_labels=2)
+            "bert-base-uncased", num_labels=3)
+        self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+
+        # Initialize sub-agents
         self.decision_agent = DecisionAgent(self.model, self.tokenizer)
+        self.tech_agent = TechnicalAgent()
+        self.news_collector = NewsCollector()
+        self.calculate_agent = CalculateAgent(timeframe=self.timeframe)
 
     def run(self):
-        urls = URLS.get(self.coin_name.upper(), [])
+        print(
+            f"🔎 Running MainAgent for {self.coin_name} ({self.timeframe})...")
+
+        # 1️⃣ Fetch news
+        print(f"📰 Fetching news for {self.coin_name}...")
+        urls = self.news_collector.get_urls(self.coin_name)
         if not urls:
-            print(f"⚠️ No URLs found for {self.coin_name}")
+            print(f"⚠️ No news URLs found for {self.coin_name}.")
             return
 
-        print(f"🔎 Collecting {len(urls)} URLs for {self.coin_name}...\n")
-        results = []
-
+        all_text = ""
         for url in urls:
             text = self.news_collector.extract_text(url)
-            if not text:
-                continue
+            if text:
+                if self.debug:
+                    print(f"🧾 DEBUG: Extracted {len(text)} chars from {url}")
+                all_text += text + "\n"
 
-            action, confidence = self.decision_agent.analyze(text)
-            trade = calculate_trade(
-                action, confidence, self.portfolio_value, self.coin_name)
+        if not all_text.strip():
+            print("⚠️ No text extracted from any news source.")
+            return
 
-            results.append({
-                "url": url,
-                "decision": {
-                    "action": action,
-                    "confidence": confidence,
-                    **trade
-                }
-            })
+        # 2️⃣ Technical analysis
+        tech_bias, tech_strength, tf = self.tech_agent.analyze(
+            self.coin_name, self.timeframe)
 
-        print("\n✅ Final Results:")
-        for r in results:
-            print(r)
+        # 3️⃣ Combine both analyses
+        print(
+            f"🤖 Running sentiment + technical decision for {self.coin_name}...")
+        action, confidence, sentiment, tech_bias, tf = self.decision_agent.analyze(
+            all_text, tech_bias, self.timeframe
+        )
+
+        # 4️⃣ Trading calculation
+        result = self.calculate_agent.calculate(
+            action, confidence, self.portfolio_value, self.coin_name
+        )
+
+        if result:
+            result["sentiment"] = sentiment
+            result["tech_bias"] = tech_bias
+            result["timeframe"] = tf
+
+            print("\n✅ Final Decision:")
+            print(result)
+        else:
+            print("❌ Could not compute a final decision.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--coin", type=str, default="BNB")
-    parser.add_argument("--portfolio", type=float, default=2000)
+    parser = argparse.ArgumentParser(description="Crypto AI Trading Agent")
+    parser.add_argument("--coin", type=str, default="BTC",
+                        help="Coin symbol to analyze, e.g. BTC, ETH, BNB")
+    parser.add_argument("--portfolio", type=float,
+                        default=1000, help="Portfolio value in USD")
+    parser.add_argument("--timeframe", type=str, default="4h",
+                        help="Chart timeframe (e.g., 1h, 4h, 1d)")
+    parser.add_argument("--debug", action="store_true",
+                        help="Enable debug output")
+    parser.add_argument("--findbest", action="store_true",
+                        help="Find the best coin to trade")
+
     args = parser.parse_args()
 
-    agent = MainAgent(coin_name=args.coin, portfolio_value=args.portfolio)
-    agent.run()
+    # 🧩 If --findbest flag is given, activate the multi-coin search agent
+    if args.findbest:
+        print("🚀 Running BestCoinAgent to find best trading opportunity...")
+        best_agent = BestCoinAgent(
+            portfolio_value=args.portfolio, timeframe=args.timeframe)
+        best_agent.find_best()
+    else:
+        # 🪙 Otherwise, analyze a single coin
+        agent = MainAgent(
+            coin_name=args.coin,
+            portfolio_value=args.portfolio,
+            timeframe=args.timeframe,
+            debug=args.debug
+        )
+        agent.run()
