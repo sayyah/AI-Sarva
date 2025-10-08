@@ -90,18 +90,12 @@ class TechnicalAgent:
         """
         Decide bullish / bearish / neutral bias based on last candle indicators.
         """
-        close = float(latest["Close"].iloc[0]) if hasattr(
-            latest["Close"], "iloc") else float(latest["Close"])
-        ma20 = float(latest["MA20"].iloc[0]) if hasattr(
-            latest["MA20"], "iloc") else float(latest["MA20"])
-        ma50 = float(latest["MA50"].iloc[0]) if hasattr(
-            latest["MA50"], "iloc") else float(latest["MA50"])
-        rsi = float(latest["RSI"].iloc[0]) if hasattr(
-            latest["RSI"], "iloc") else float(latest["RSI"])
-        macd = float(latest["MACD"].iloc[0]) if hasattr(
-            latest["MACD"], "iloc") else float(latest["MACD"])
-        signal = float(latest["Signal"].iloc[0]) if hasattr(
-            latest["Signal"], "iloc") else float(latest["Signal"])
+        close = float(latest["Close"])
+        ma20 = float(latest["MA20"])
+        ma50 = float(latest["MA50"])
+        rsi = float(latest["RSI"])
+        macd = float(latest["MACD"])
+        signal = float(latest["Signal"])
 
         bias = "NEUTRAL"
         strength = 0.0
@@ -128,5 +122,6 @@ class TechnicalAgent:
         else:
             strength -= 0.3
 
+        # Clamp
         strength = max(0.0, min(1.0, abs(strength)))
         return bias, strength
