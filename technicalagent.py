@@ -1,95 +1,53 @@
+# technicalagent.py
 import yfinance as yf
 import pandas as pd
 import numpy as np
+from database import Database
 
 
 class TechnicalAgent:
     def __init__(self):
-        pass
+        self.db = Database()
 
-    def analyze(self, coin_symbol: str, timeframe: str = "4h"):
-        """
-        Perform simple technical analysis on the given coin using Yahoo Finance data.
-        Returns: (bias, strength, timeframe)
-        """
-        print(
-            f"📊 Performing technical analysis for {coin_symbol} ({timeframe})...")
+    def analyze(self, coin_name, timeframe="4h"):
+        ticker = f"{coin_name.upper()}-USD"
+        print(f"📊 Performing technical analysis for {ticker} ({timeframe})...")
 
-        ticker = f"{coin_symbol}-USD"
-
-        # Choose interval & period based on timeframe
-        if timeframe == "1h":
-            interval = "1h"
-            period = "7d"
-        elif timeframe == "4h":
-            interval = "4h"
+        if timeframe in ["1h", "4h"]:
             period = "30d"
-        elif timeframe == "1d":
-            interval = "1d"
+        elif timeframe in ["1d", "1wk"]:
             period = "180d"
         else:
-            interval = "4h"
-            period = "30d"
+            period = "90d"
 
         try:
-            data = yf.download(
-                ticker,
-                period=period,
-                interval=interval,
-                progress=False,
-                auto_adjust=True
-            )
+            data = yf.download(ticker, period=period,
+                               interval=timeframe, progress=False)
         except Exception as e:
-            print(f"⚠️ Failed to load chart data: {e}")
-            return "NEUTRAL", 0.0, timeframe
+            print(f"⚠️ Failed to download data for {ticker}: {e}")
+            return "UNKNOWN", 0.0, timeframe, "Download error"
 
         if data.empty:
-            print("⚠️ No chart data found.")
-            return "NEUTRAL", 0.0, timeframe
+            print(f"⚠️ No data found for {coin_name} {timeframe}")
+            return "UNKNOWN", 0.0, timeframe, "No market data available"
 
-        # Calculate indicators
-        data["MA20"] = data["Close"].rolling(window=20).mean()
-        data["MA50"] = data["Close"].rolling(window=50).mean()
-        data["RSI"] = self.calculate_rsi(data["Close"])
-        data["MACD"], data["Signal"] = self.calculate_macd(data["Close"])
+        data["MA20"] = data["Close"].rolling(20).mean()
+        data["MA50"] = data["Close"].rolling(50).mean()
 
-        # Ensure indicators are not NaN for latest row
-        data = data.dropna()
-        if data.empty:
-            print("⚠️ Not enough data for technical indicators.")
-            return "NEUTRAL", 0.0, timeframe
+        delta = data["Close"].diff()
+        gain = np.where(delta > 0, delta, 0).flatten()
+        loss = np.where(delta < 0, -delta, 0).flatten()
+        avg_gain = pd.Series(gain).rolling(window=14).mean()
+        avg_loss = pd.Series(loss).rolling(window=14).mean()
+        rs = avg_gain / avg_loss
+        data["RSI"] = 100 - (100 / (1 + rs))
+
+        ema12 = data["Close"].ewm(span=12, adjust=False).mean()
+        ema26 = data["Close"].ewm(span=26, adjust=False).mean()
+        data["MACD"] = ema12 - ema26
+        data["Signal"] = data["MACD"].ewm(span=9, adjust=False).mean()
 
         latest = data.iloc[-1]
-
-        bias, strength = self.interpret_indicators(latest)
-        print(
-            f"✅ Technical bias: {bias} (strength={strength:.2f}) using {timeframe}")
-        return bias, strength, timeframe
-
-    # --------------------------
-    # Helper Functions
-    # --------------------------
-    def calculate_rsi(self, series, period=14):
-        delta = series.diff()
-        gain = delta.where(delta > 0, 0)
-        loss = -delta.where(delta < 0, 0)
-        avg_gain = gain.rolling(window=period, min_periods=period).mean()
-        avg_loss = loss.rolling(window=period, min_periods=period).mean()
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        return rsi
-
-    def calculate_macd(self, series, fast=12, slow=26, signal=9):
-        exp1 = series.ewm(span=fast, adjust=False).mean()
-        exp2 = series.ewm(span=slow, adjust=False).mean()
-        macd = exp1 - exp2
-        signal_line = macd.ewm(span=signal, adjust=False).mean()
-        return macd, signal_line
-
-    def interpret_indicators(self, latest):
-        """
-        Decide bullish / bearish / neutral bias based on last candle indicators.
-        """
         close = float(latest["Close"])
         ma20 = float(latest["MA20"])
         ma50 = float(latest["MA50"])
@@ -97,31 +55,42 @@ class TechnicalAgent:
         macd = float(latest["MACD"])
         signal = float(latest["Signal"])
 
-        bias = "NEUTRAL"
-        strength = 0.0
+        print(f"🔹 Close: {close:.2f}")
+        print(f"🔹 MA20: {ma20:.2f}")
+        print(f"🔹 MA50: {ma50:.2f}")
+        print(f"🔹 RSI: {rsi:.2f}")
+        print(f"🔹 MACD: {macd:.4f}, Signal: {signal:.4f}")
 
-        # Trend via MA cross
+        bias = "NEUTRAL"
+        strength = 0.1
+        reasons = []
+
         if ma20 > ma50:
             bias = "BULLISH"
-            strength += 0.4
+            reasons.append("MA20 > MA50 (uptrend)")
         elif ma20 < ma50:
             bias = "BEARISH"
-            strength += 0.4
+            reasons.append("MA20 < MA50 (downtrend)")
 
-        # RSI
-        if rsi < 30:
-            bias = "BULLISH"
-            strength += 0.3
-        elif rsi > 70:
+        if rsi > 70:
             bias = "BEARISH"
-            strength += 0.3
+            reasons.append("RSI > 70 (overbought)")
+        elif rsi < 30:
+            bias = "BULLISH"
+            reasons.append("RSI < 30 (oversold)")
 
-        # MACD
         if macd > signal:
-            strength += 0.3
-        else:
-            strength -= 0.3
+            reasons.append("MACD > Signal (momentum rising)")
+        elif macd < signal:
+            reasons.append("MACD < Signal (momentum falling)")
 
-        # Clamp
-        strength = max(0.0, min(1.0, abs(strength)))
-        return bias, strength
+        reason_text = "; ".join(reasons)
+        print(
+            f"✅ Technical bias: {bias} (strength={strength:.2f}) using {timeframe}")
+        print(f"📘 Reason: {reason_text}")
+
+        # 🔹 Save to DB
+        self.db.save_technical(coin_name.upper(), timeframe,
+                               bias, strength, reason_text)
+
+        return bias, strength, timeframe, reason_text

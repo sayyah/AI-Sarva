@@ -1,0 +1,15 @@
+{
+  "coin": "BTC",
+  "url": "https://coinjournal.net/news/",
+  "sentiment": "neutral",
+  "tech_bias": "BEARISH",
+  "action": "HOLD",
+  "confidence": 0.9999924898147583,
+  "entry_price": 121950.28125,
+  "exit_price": 121950.28125,
+  "stop_loss": 121950.28125,
+  "current_price": 121950.28125,
+  "reason": "MA20 < MA50 (downtrend); MACD < Signal (momentum falling)",
+  "timeframe": "4h",
+  "timestamp": "2025-10-10T16:54:54.621018"
+}

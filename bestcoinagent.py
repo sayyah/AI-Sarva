@@ -1,85 +1,65 @@
-import time
-from technicalagent import TechnicalAgent
+# bestcoinagent.py
+from loadfinbertmodel import load_finbert
 from decisionagent import DecisionAgent
-from calculations import CalculateAgent
-from transformers import BertTokenizer, BertForSequenceClassification
-import torch
-import yfinance as yf
+from technicalagent import TechnicalAgent
+from newscollector import NewsCollector
 
 
 class BestCoinAgent:
-    def __init__(self, portfolio_value=1000, timeframe="4h", top_n=3):
-        self.portfolio_value = portfolio_value
+    def __init__(self, timeframe="4h", debug=False):
         self.timeframe = timeframe
-        self.top_n = top_n
-        self.coins = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA"]
-
-        # Load AI model once
-        self.model = BertForSequenceClassification.from_pretrained(
-            "bert-base-uncased", num_labels=3)
-        self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-
-        # Shared agents
-        self.tech_agent = TechnicalAgent()
+        self.debug = debug
+        self.model, self.tokenizer = load_finbert()
         self.decision_agent = DecisionAgent(self.model, self.tokenizer)
-        self.calculate_agent = CalculateAgent(timeframe=self.timeframe)
+        self.tech_agent = TechnicalAgent()
+        self.news_collector = NewsCollector()
+        self.coins = ["BTC", "ETH", "BNB", "SOL", "ADA"]
 
-    def analyze_coin(self, coin):
-        try:
-            print(f"\n🔎 Analyzing {coin}...")
+    def run(self):
+        print(
+            f"🔍 Scanning {len(self.coins)} coins for the best trading opportunity ({self.timeframe})...\n")
 
-            # Technical analysis
+        results = []
+        for coin in self.coins:
+            print(f"🧩 Analyzing {coin}...")
+
+            # Technical
             tech_bias, tech_strength, tf = self.tech_agent.analyze(
                 coin, self.timeframe)
-            time.sleep(1)
 
-            # Dummy text sentiment (in a full system, fetch latest news)
-            sentiment_text = f"{coin} latest price trend and news show {tech_bias.lower()} signals."
-
-            action, conf, sentiment, tech_bias, tf = self.decision_agent.analyze(
-                sentiment_text, tech_bias, self.timeframe
-            )
-
-            result = self.calculate_agent.calculate(
-                action, conf, self.portfolio_value, coin)
-
-            if result:
-                score = conf * (1.2 if tech_bias == "BULLISH" else 0.8)
-                result["score"] = score
-                result["sentiment"] = sentiment
-                result["tech_strength"] = tech_strength
-                return result
+            # News
+            news_texts = self.news_collector.collect(coin)
+            if not news_texts:
+                sentiment, sentiment_score = "NEUTRAL", 0.0
             else:
-                return None
+                combined_score = 0
+                for text in news_texts.values():
+                    s, sc = self.decision_agent.analyze_sentiment(text)
+                    combined_score += sc if s == "POSITIVE" else -sc
+                sentiment = "POSITIVE" if combined_score > 0 else "NEGATIVE"
+                sentiment_score = abs(combined_score / len(news_texts))
 
-        except Exception as e:
-            print(f"⚠️ Failed to analyze {coin}: {e}")
-            return None
+            # Combine
+            total_score = (tech_strength + sentiment_score) / 2
+            action = "LONG" if tech_bias == "BULLISH" and sentiment == "POSITIVE" else \
+                     "SHORT" if tech_bias == "BEARISH" and sentiment == "NEGATIVE" else "HOLD"
 
-    def find_best(self):
-        print("🚀 Finding best trading opportunity among coins...")
-        results = []
+            results.append({
+                "coin": coin,
+                "action": action,
+                "tech_bias": tech_bias,
+                "sentiment": sentiment,
+                "score": total_score,
+                "timeframe": tf
+            })
 
-        for coin in self.coins:
-            res = self.analyze_coin(coin)
-            if res:
-                results.append(res)
-
-        if not results:
-            print("❌ No valid trading opportunities found.")
-            return None
-
-        # Sort by score descending
+        # Sort & display
         results.sort(key=lambda x: x["score"], reverse=True)
-
-        print("\n🏆 Top Trading Candidates:")
-        for i, r in enumerate(results[:self.top_n]):
+        print("\n🏆 Best Coins for Trading:")
+        for r in results[:5]:
             print(
-                f"#{i+1}: {r['action']} {r['score']:.3f} | "
-                f"{r['confidence']:.3f} conf | {r['current_price']} USD ({r['timeframe']})"
-            )
+                f" - {r['coin']}: {r['action']} ({r['tech_bias']}, {r['sentiment']}) — score={r['score']:.2f}")
 
         best = results[0]
         print(
-            f"\n✅ Best Coin: {best['action']} {best['score']:.3f} on {best['timeframe']}")
-        return best
+            f"\n✅ Recommended: {best['coin']} → {best['action']} ({best['tech_bias']}, {best['sentiment']})")

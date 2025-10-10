@@ -1,54 +1,72 @@
 import torch
-import numpy as np
+import torch.nn.functional as F
 
 
 class DecisionAgent:
-    def __init__(self, model, tokenizer, chart_agent=None, debug=False):
+    def __init__(self, model, tokenizer):
         self.model = model
         self.tokenizer = tokenizer
-        self.chart_agent = chart_agent
-        self.debug = debug
+        self.model.eval()  # set BERT to inference mode
 
-    def analyze(self, text):
+        # sentiment labels
+        self.labels = ["negative", "neutral", "positive"]
+
+    def analyze(self, text, tech_bias=None, timeframe=None, debug=False):
+        """
+        Analyze news text and combine with technical analysis to make a decision.
+        Returns: action, confidence, sentiment_label, tech_bias, timeframe
+        """
+        if not text or len(text.strip()) < 30:
+            if debug:
+                print("⚠️ Skipping empty/short news text")
+            return "HOLD", 1.0, "neutral", tech_bias, timeframe
+
+        # Tokenize the input
         inputs = self.tokenizer(
             text,
             return_tensors="pt",
             truncation=True,
-            max_length=512
+            padding=True,
+            max_length=512,
         )
 
-        outputs = self.model(**inputs)
-        probs = torch.nn.functional.softmax(
-            outputs.logits, dim=-1).detach().numpy()[0]
-        labels = ["negative", "neutral", "positive"]
-        sentiment = labels[np.argmax(probs)]
-        confidence = float(np.max(probs))
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            logits = outputs.logits
+            probs = F.softmax(logits, dim=1)
+            conf, pred = torch.max(probs, dim=1)
 
-        # Map sentiment to action
-        sentiment_action = "LONG" if sentiment == "positive" else "SHORT" if sentiment == "negative" else "HOLD"
+        sentiment_label = self.labels[pred.item()]
+        confidence = conf.item()
 
-        # Add chart analysis
-        tech_bias, timeframe = self.chart_agent.analyze_chart(
-        ) if self.chart_agent else ("NEUTRAL", "N/A")
+        # 🧩 Determine news-based sentiment direction
+        sentiment_bias = 0
+        if sentiment_label == "positive":
+            sentiment_bias = +1
+        elif sentiment_label == "negative":
+            sentiment_bias = -1
 
-        # Combine both signals
-        final_action = self.combine_signals(sentiment_action, tech_bias)
+        # 🧮 Combine with technical bias
+        final_action = "HOLD"
+        if tech_bias == "BULLISH":
+            if sentiment_bias == 1:
+                final_action = "LONG"
+            elif sentiment_bias == -1:
+                final_action = "HOLD"  # conflicting signals
+        elif tech_bias == "BEARISH":
+            if sentiment_bias == -1:
+                final_action = "SHORT"
+            elif sentiment_bias == 1:
+                final_action = "HOLD"
+        elif tech_bias == "NEUTRAL":
+            # rely mainly on news
+            final_action = "LONG" if sentiment_bias == 1 else "SHORT" if sentiment_bias == -1 else "HOLD"
 
-        if self.debug:
+        if debug:
+            print("\n🧠 DEBUG SENTIMENT ANALYSIS")
             print(
-                f"📰 News sentiment: {sentiment.upper()} ({confidence:.3f}) → {sentiment_action}")
-            print(f"📊 Technical bias ({timeframe}): {tech_bias}")
-            print(f"🎯 Combined action: {final_action}")
+                f"📰 Sentiment: {sentiment_label.upper()} (confidence={confidence:.4f})")
+            print(f"📈 Technical Bias: {tech_bias} [{timeframe}]")
+            print(f"⚙️  Combined Decision: {final_action}")
 
-        return final_action, confidence, sentiment, tech_bias, timeframe
-
-    def combine_signals(self, sentiment_action, tech_bias):
-        if tech_bias == "NEUTRAL":
-            return sentiment_action
-        if sentiment_action == "HOLD":
-            return "HOLD"
-        if sentiment_action == "LONG" and tech_bias == "BULLISH":
-            return "LONG"
-        if sentiment_action == "SHORT" and tech_bias == "BEARISH":
-            return "SHORT"
-        return "HOLD"
+        return final_action, confidence, sentiment_label, tech_bias, timeframe
