@@ -1,142 +1,120 @@
-import os
-import csv
-import random
 import yfinance as yf
 import numpy as np
-import pandas as pd
 from datetime import datetime
-from rich.console import Console
 
 
 class CalculateAgent:
     """
-    This agent calculates entry/exit/stop levels based on volatility,
-    determines trade size, and can simulate trade outcomes.
+    CalculateAgent is responsible for determining key trade levels such as
+    entry price, exit price, and stop loss, based on technical bias and action.
     """
 
     def __init__(self, portfolio_value: float):
         self.portfolio_value = portfolio_value
-        self.console = Console()
-        self.reports_dir = "reports"
-        os.makedirs(self.reports_dir, exist_ok=True)
 
-    # -----------------------------------------------------------------
-    def calculate_prices(self, coin: str, action: str, timeframe: str = "4h"):
-        """Calculate trade levels dynamically using recent volatility."""
-        ticker = f"{coin}-USD"
-        self.console.print(
-            f"\n💰 [cyan]Calculating trade levels for[/] {ticker} ({timeframe})...")
-
-        # Select historical range based on timeframe
-        if "d" in timeframe:
-            period, interval = "90d", "1d"
-        elif "h" in timeframe:
-            period, interval = "30d", timeframe
-        else:
-            period, interval = "7d", "1h"
-
+    def fetch_price(self, coin: str):
+        """
+        Fetches the most recent price for the given coin symbol.
+        """
         try:
-            data = yf.download(ticker, period=period,
-                               interval=interval, progress=False)
+            # Normalize ticker: remove duplicates and ensure proper format
+            coin = self._normalize_ticker(coin)
+            ticker = f"{coin}-USD"
+            data = yf.download(ticker, period="7d",
+                               interval="1h", progress=False)
+
+            if data.empty:
+                print(f"⚠️ No data found for {ticker}")
+                return None
+
+            return float(data["Close"].iloc[-1])
         except Exception as e:
-            self.console.print(
-                f"⚠️ [red]Error fetching market data for {ticker}: {e}[/]")
-            return None, None, None, None
+            print(f"⚠️ Failed to fetch price for {coin}: {e}")
+            return None
 
-        if data.empty:
-            self.console.print(
-                f"⚠️ [red]No data found for {ticker} {timeframe}[/]")
-            return None, None, None, None
+    def _normalize_ticker(self, coin: str) -> str:
+        """
+        Cleans up the ticker format (e.g. removes duplicate suffixes or invalid endings).
+        Examples:
+            BTC -> BTC
+            BTC-USD -> BTC
+            ETHUSDT -> ETH
+            ADA-USDT -> ADA
+        """
+        # If there’s a dash, take the part before it
+        if "-" in coin:
+            coin = coin.split("-")[0]
 
-        # Average True Range (simplified)
-        data["HL_range"] = data["High"] - data["Low"]
-        atr = data["HL_range"].rolling(window=14).mean().iloc[-1]
-        current_price = float(data["Close"].iloc[-1])
+        # Remove stablecoin suffixes if they exist
+        for suffix in ["USDT", "USD", "TETHER", "BUSD"]:
+            if coin.upper().endswith(suffix):
+                coin = coin[: -len(suffix)]
 
-        risk_pct, reward_pct = 0.03, 0.05
-        if atr > 0:
-            vol_factor = min(2.0, max(0.5, atr / current_price * 50))
-            risk_pct *= vol_factor
-            reward_pct *= vol_factor
+        return coin.upper()
 
-        if action == "LONG":
+    def calculate_prices(self, coin: str, action: str):
+        """
+        Calculates trade prices based on the action and coin data.
+        Returns (entry_price, exit_price, stop_loss, current_price)
+        """
+        current_price = self.fetch_price(coin)
+        if current_price is None or current_price <= 0:
+            # Return flat dummy values so code won't break
+            return 0, 0, 0, 0
+
+        # Risk/reward assumptions
+        risk_pct = 0.03
+        reward_pct = 0.05
+
+        if action.upper() == "LONG":
             entry_price = current_price
-            exit_price = current_price * (1 + reward_pct)
             stop_loss = current_price * (1 - risk_pct)
-            emoji, color = "⬆️", "green"
-        elif action == "SHORT":
+            exit_price = current_price * (1 + reward_pct)
+        elif action.upper() == "SHORT":
             entry_price = current_price
-            exit_price = current_price * (1 - reward_pct)
             stop_loss = current_price * (1 + risk_pct)
-            emoji, color = "⬇️", "red"
-        else:  # HOLD
+            exit_price = current_price * (1 - reward_pct)
+        else:
+            # HOLD or unknown actions
             entry_price = exit_price = stop_loss = current_price
-            emoji, color = "⚖️", "yellow"
 
-        trade_amount = min(self.portfolio_value * 0.2,
-                           self.portfolio_value * reward_pct)
-
-        self.console.print(
-            f"[bold {color}]{emoji} {action}[/] | "
-            f"Entry: [cyan]{entry_price:.2f}[/], Exit: [green]{exit_price:.2f}[/], "
-            f"Stop: [red]{stop_loss:.2f}[/], Trade Size: [bold]{trade_amount:.2f} USD[/]"
-        )
+        # Round for readability
+        entry_price = round(entry_price, 2)
+        exit_price = round(exit_price, 2)
+        stop_loss = round(stop_loss, 2)
+        current_price = round(current_price, 2)
 
         return entry_price, exit_price, stop_loss, current_price
 
-    # -----------------------------------------------------------------
-    def simulate_trade(
-        self, coin: str, action: str, entry: float, exit_price: float, stop_loss: float, current_price: float
-    ):
-        """Simulates trade performance and logs it."""
-        self.console.print("\n🎮 [yellow]Simulating trade outcome...[/]")
+    def calculate(self, coin: str, action: str):
+        """
+        Backward-compatible alias for calculate_prices().
+        Some agents still call `calculate()` — this keeps it working.
+        """
+        return self.calculate_prices(coin, action)
 
-        if action == "HOLD":
-            self.console.print(
-                "⚖️ [blue]No trade executed (HOLD decision).[/]")
-            return None
+    def position_size(self, action: str, confidence: float):
+        """
+        Determines position size based on portfolio value and model confidence.
+        """
+        # Minimum trade fraction = 10%
+        base_fraction = 0.1
+        size = self.portfolio_value * (base_fraction + confidence * 0.4)
 
-        # Simulate random market movement outcome
-        outcome = random.choice(["win", "loss"])
-        final_price = exit_price if outcome == "win" else stop_loss
+        return round(size, 2)
 
-        pnl_percent = ((final_price - entry) / entry) * \
-            100 if action == "LONG" else ((entry - final_price) / entry) * 100
-        pnl_amount = (pnl_percent / 100) * self.portfolio_value * \
-            0.2  # assume 20% of portfolio per trade
-
-        self.console.print(
-            f"📊 [cyan]{coin}[/]: {action} {outcome.upper()} → "
-            f"P/L: [bold {'green' if pnl_percent > 0 else 'red'}]{pnl_percent:.2f}%[/] "
-            f"(${pnl_amount:.2f})"
+    def report(self, coin: str, action: str, entry, exit_price, stop, current):
+        """
+        Creates a readable text report of the trade.
+        """
+        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        report = (
+            f"\n📊 TRADE REPORT ({timestamp})"
+            f"\n🪙 Coin: {coin}"
+            f"\n🎯 Action: {action.upper()}"
+            f"\n💰 Entry: {entry}"
+            f"\n📈 Exit Target: {exit_price}"
+            f"\n🛑 Stop Loss: {stop}"
+            f"\n💹 Current Price: {current}\n"
         )
-
-        self.log_trade(coin, action, entry, final_price,
-                       pnl_percent, pnl_amount, outcome)
-        return pnl_percent, pnl_amount
-
-    # -----------------------------------------------------------------
-    def log_trade(self, coin, action, entry, final_price, pnl_percent, pnl_amount, outcome):
-        """Logs trade result into CSV."""
-        report_file = os.path.join(self.reports_dir, "trade_history.csv")
-        headers = ["Date", "Coin", "Action", "Entry",
-                   "Exit", "PnL %", "PnL $", "Outcome"]
-
-        file_exists = os.path.isfile(report_file)
-        with open(report_file, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            if not file_exists:
-                writer.writerow(headers)
-            writer.writerow(
-                [
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    coin,
-                    action,
-                    f"{entry:.2f}",
-                    f"{final_price:.2f}",
-                    f"{pnl_percent:.2f}",
-                    f"{pnl_amount:.2f}",
-                    outcome,
-                ]
-            )
-        self.console.print(f"🧾 [green]Trade logged to[/] {report_file}")
+        return report

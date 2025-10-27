@@ -1,208 +1,166 @@
 import argparse
-import json
-import os
-from datetime import datetime
-from loadfinbertmodel import load_finbert
 from decisionagent import DecisionAgent
 from technicalagent import TechnicalAgent
 from newscollector import NewsCollector
 from calculates import CalculateAgent
-from urls import COIN_URLS
-from rich.console import Console
-from rich.table import Table
+from findbestagent import FindBestAgent
+from datetime import datetime
 
 
 class MainAgent:
-    def __init__(self, coin_name, portfolio_value, timeframe="4h", debug=False, report=False, findbest=False):
-        self.coin_name = coin_name.upper() if coin_name else None
+    def __init__(self, coin_name, portfolio_value, timeframe="4h", debug=False, report=False):
+        self.coin_name = coin_name.upper()
         self.portfolio_value = portfolio_value
         self.timeframe = timeframe
         self.debug = debug
         self.report = report
-        self.findbest = findbest
 
-        self.console = Console()
-        self.console.print(
-            f"🪙 [bold cyan]Initializing MainAgent[/] ({'FindBest Mode' if findbest else self.coin_name}) | [yellow]{self.timeframe}[/]")
-
-        self.model, self.tokenizer = load_finbert()
         self.technical_agent = TechnicalAgent()
-        self.decision_agent = DecisionAgent(self.model, self.tokenizer)
-        self.trade_calc = CalculateAgent(portfolio_value=self.portfolio_value)
+        self.decision_agent = DecisionAgent()
+        self.trade_calc = CalculateAgent(portfolio_value)
 
-        if self.report:
-            os.makedirs("reports", exist_ok=True)
+        # Initialize NewsCollector for this specific coin
+        self.news_collector = NewsCollector(coin=self.coin_name)
 
-    # -------------------------------------------------------------------------
+        print(
+            f"🪙 Initializing MainAgent for {self.coin_name} (Timeframe: {self.timeframe})")
+
     def analyze_coin(self, coin):
-        """Perform full analysis for a single coin."""
-        self.console.print(f"\n🔍 [bold yellow]Analyzing {coin}...[/]")
+        if self.debug:
+            print(f"🔎 Starting analysis for {coin}...")
 
-        urls = COIN_URLS.get(coin, [])
-        if not urls:
-            self.console.print(
-                f"⚠️ No URLs found for {coin}. Skipping.", style="red")
-            return None
-
-        news_collector = NewsCollector(urls)
-
-        # --- Technical analysis ---
+        # ---- Step 1: Technical Analysis ----
         tech_bias, strength, tf, reason = self.technical_agent.analyze(
             coin, self.timeframe)
-        self.console.print(
-            f"📊 [bold blue]Technical bias:[/] {tech_bias} ({strength:.2f}) [{tf}] → {reason}")
+        if self.debug:
+            print(
+                f"📊 Technical bias: {tech_bias} ({strength:.2f}) [{tf}] → {reason}")
 
-        # --- News collection ---
-        news_texts = news_collector.collect()
+        # ---- Step 2: Collect News ----
+        news_collector = NewsCollector(coin)
+        news_texts = news_collector.collect_news()
         if not news_texts:
-            self.console.print(f"⚠️ No news articles for {coin}.", style="red")
+            print(f"⚠️ No news articles for {coin}.")
             return None
 
-        best_decision = None
+        if self.debug:
+            print(f"📰 Collected {len(news_texts)} news articles for {coin}")
 
+        # ---- Step 3: Analyze Sentiment ----
+        combined_results = []
         for url, text in news_texts.items():
-            self.console.print(
-                f"\n🧠 [bold]Analyzing sentiment for[/] {coin}: [cyan]{url}[/]")
+            if self.debug:
+                print(f"\n🧠 Analyzing news sentiment for: {url}")
 
-            action, conf, sentiment, tech_bias, tf = self.decision_agent.analyze(
-                text, tech_bias=tech_bias, timeframe=tf, debug=self.debug
+            sentiment, confidence = self.decision_agent.classify_news(text)
+
+            if self.debug:
+                print(f"🧠 DEBUG SENTIMENT ANALYSIS")
+                print(
+                    f"📰 Sentiment: {sentiment.upper()} (confidence={confidence:.4f})")
+                print(f"📈 Technical Bias: {tech_bias} [{tf}]")
+
+            # Combine sentiment + technical
+            action, final_conf = self.decision_agent.combine_signals(
+                sentiment, confidence, tech_bias, strength
             )
 
-            # ✅ FIXED unpack
-            entry_price, exit_price, stop_loss, current_price = self.trade_calc.calculate_prices(
-                coin, action)
+            if self.debug:
+                print(
+                    f"⚙️ Combined Decision: {action.upper()} ({final_conf*100:.2f}%)")
 
-            self.console.print(
-                f"🗞️ [green]{coin}[/] | Sentiment: [bold]{sentiment}[/], "
-                f"Tech: [bold]{tech_bias}[/], Action: [bold yellow]{action}[/], "
-                f"Conf: {conf:.3f}, Entry: {entry_price:.2f}"
+            # ---- Step 4: Trading Calculation ----
+            entry_price, exit_price, stop_loss, current_price = self.trade_calc.calculate(
+                coin, action
             )
 
-            decision = {
-                "coin": coin,
+            result = {
                 "url": url,
-                "sentiment": sentiment,
-                "tech_bias": tech_bias,
-                "action": action,
-                "confidence": conf,
-                "entry_price": entry_price,
-                "exit_price": exit_price,
-                "stop_loss": stop_loss,
-                "current_price": current_price,
-                "reason": reason,
-                "timeframe": tf,
-                "timestamp": datetime.now().isoformat(),
+                "decision": {
+                    "action": action,
+                    "confidence": round(final_conf, 4),
+                    "amount": round((self.portfolio_value * final_conf) / 5, 2),
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                    "stop_loss": stop_loss,
+                    "current_price": current_price,
+                    "sentiment": sentiment,
+                    "technical": tech_bias,
+                },
             }
 
-            if best_decision is None or conf > best_decision["confidence"]:
-                best_decision = decision
+            combined_results.append(result)
 
-            # Save per-coin report
-            if self.report:
-                with open(f"reports/{coin}_report.jsonl", "a", encoding="utf-8") as f:
-                    f.write(json.dumps(decision) + "\n")
+        # ---- Step 5: Reporting ----
+        self.display_results(combined_results)
+        if self.report:
+            self.save_report(combined_results, coin)
 
-        return best_decision
+        return combined_results
 
-    # -------------------------------------------------------------------------
-    def run(self):
-        """Main execution flow."""
-        if self.findbest:
-            self.console.print(
-                "\n🚀 [bold green]FindBest mode activated — scanning all coins...[/]\n")
-            all_results = []
-
-            for coin in COIN_URLS.keys():
-                result = self.analyze_coin(coin)
-                if result:
-                    all_results.append(result)
-
-            if not all_results:
-                self.console.print(
-                    "⚠️ No valid results from any coin.", style="red")
-                return
-
-            # Create visual summary table
-            table = Table(title="📊 Trading Summary", style="bold white")
-            table.add_column("Coin", style="cyan", justify="center")
-            table.add_column("Sentiment", style="magenta", justify="center")
-            table.add_column("Tech Bias", style="blue", justify="center")
-            table.add_column("Action", style="yellow", justify="center")
-            table.add_column("Confidence", style="green", justify="center")
-            table.add_column("Entry", justify="right")
-            table.add_column("Exit", justify="right")
-            table.add_column("Stop", justify="right")
-
-            for r in all_results:
-                table.add_row(
-                    r["coin"],
-                    r["sentiment"],
-                    r["tech_bias"],
-                    r["action"],
-                    f"{r['confidence']:.2%}",
-                    f"{r['entry_price']:.2f}",
-                    f"{r['exit_price']:.2f}",
-                    f"{r['stop_loss']:.2f}",
-                )
-
-            self.console.print(table)
-
-            best = max(all_results, key=lambda r: r["confidence"])
-            self.console.print(
-                f"\n🏆 [bold green]BEST TRADE:[/] {best['coin']} → [bold yellow]{best['action']}[/] "
-                f"({best['confidence']:.2%}) | Tech: {best['tech_bias']}, Sent: {best['sentiment']}"
+    def display_results(self, results):
+        print("\n✅ FINAL DECISIONS")
+        for res in results:
+            d = res["decision"]
+            print(
+                f"🎯 {res['url']}\n"
+                f"→ {d['action']} ({d['confidence']*100:.2f}%) | "
+                f"Sentiment={d['sentiment']} | Tech={d['technical']}\n"
+                f"💹 Entry={d['entry_price']}, Exit={d['exit_price']}, Stop={d['stop_loss']}\n"
             )
 
-            # Save report
-            if self.report:
-                with open("reports/best_trade.json", "w", encoding="utf-8") as f:
-                    json.dump(best, f, indent=2)
-            return
+    def save_report(self, results, coin):
+        import json
+        import os
 
-        # Normal mode
-        result = self.analyze_coin(self.coin_name)
-        if not result:
-            self.console.print("⚠️ No actionable result.", style="red")
-            return
+        filename = f"reports/{coin}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        os.makedirs("reports", exist_ok=True)
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=4)
+        print(f"📊 Report saved to {filename}")
 
-        self.console.print("\n✅ [bold green]FINAL DECISION[/]")
-        self.console.print(
-            f"🎯 {result['coin']} → [yellow]{result['action']}[/] "
-            f"({result['confidence']:.2%}) | Sentiment={result['sentiment']} | Tech={result['tech_bias']}"
-        )
-        self.console.print(
-            f"💹 Entry={result['entry_price']:.2f}, Exit={result['exit_price']:.2f}, "
-            f"Stop={result['stop_loss']:.2f}"
-        )
+    def run(self):
+        self.analyze_coin(self.coin_name)
 
 
-# -------------------------------------------------------------------------
-# CLI
-# -------------------------------------------------------------------------
+# ---------------------- ENTRY POINT ----------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Crypto AI Trading Agent with Technical & News Analysis")
-    parser.add_argument("--coin", help="Coin symbol (e.g. BTC, ETH, BNB)")
+        description="AI Trading Agent (News + Technical)")
+    parser.add_argument("--coin", type=str, help="Coin name (e.g., BTC, ETH)")
     parser.add_argument("--portfolio", type=float,
-                        required=True, help="Total portfolio value in USD")
-    parser.add_argument("--timeframe", default="4h",
-                        help="Technical analysis timeframe")
+                        required=True, help="Total portfolio value")
+    parser.add_argument("--timeframe", type=str,
+                        default="4h", help="Timeframe for analysis")
     parser.add_argument("--debug", action="store_true",
-                        help="Enable verbose output")
+                        help="Enable debug output")
     parser.add_argument("--report", action="store_true",
-                        help="Save report files")
+                        help="Save report to file")
     parser.add_argument("--findbest", action="store_true",
-                        help="Analyze all coins and pick the best one")
+                        help="Find best coin for long position")
 
     args = parser.parse_args()
 
-    agent = MainAgent(
-        coin_name=args.coin,
-        portfolio_value=args.portfolio,
-        timeframe=args.timeframe,
-        debug=args.debug,
-        report=args.report,
-        findbest=args.findbest,
-    )
+    # ---- Find Best Coin ----
+    if args.findbest:
+        from findbestagent import FindBestAgent
 
-    agent.run()
+        finder = FindBestAgent(
+            portfolio_value=args.portfolio,
+            timeframe=args.timeframe,
+            debug=args.debug,
+        )
+        finder.run()
+    else:
+        # ---- Run Standard Analysis ----
+        if not args.coin:
+            parser.error("--coin is required unless --findbest is used")
+
+        agent = MainAgent(
+            coin_name=args.coin,
+            portfolio_value=args.portfolio,
+            timeframe=args.timeframe,
+            debug=args.debug,
+            report=args.report,
+        )
+        agent.run()

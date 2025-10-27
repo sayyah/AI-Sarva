@@ -6,22 +6,16 @@ class DecisionAgent:
     def __init__(self, model, tokenizer):
         self.model = model
         self.tokenizer = tokenizer
-        self.model.eval()  # set BERT to inference mode
-
-        # sentiment labels
+        self.model.eval()
         self.labels = ["negative", "neutral", "positive"]
 
     def analyze(self, text, tech_bias=None, timeframe=None, debug=False):
-        """
-        Analyze news text and combine with technical analysis to make a decision.
-        Returns: action, confidence, sentiment_label, tech_bias, timeframe
-        """
+        """Analyze news text and combine with technical bias."""
         if not text or len(text.strip()) < 30:
             if debug:
                 print("⚠️ Skipping empty/short news text")
             return "HOLD", 1.0, "neutral", tech_bias, timeframe
 
-        # Tokenize the input
         inputs = self.tokenizer(
             text,
             return_tensors="pt",
@@ -29,7 +23,6 @@ class DecisionAgent:
             padding=True,
             max_length=512,
         )
-
         with torch.no_grad():
             outputs = self.model(**inputs)
             logits = outputs.logits
@@ -38,28 +31,19 @@ class DecisionAgent:
 
         sentiment_label = self.labels[pred.item()]
         confidence = conf.item()
+        sentiment_bias = 1 if sentiment_label == "positive" else - \
+            1 if sentiment_label == "negative" else 0
 
-        # 🧩 Determine news-based sentiment direction
-        sentiment_bias = 0
-        if sentiment_label == "positive":
-            sentiment_bias = +1
-        elif sentiment_label == "negative":
-            sentiment_bias = -1
-
-        # 🧮 Combine with technical bias
         final_action = "HOLD"
-        if tech_bias == "BULLISH":
-            if sentiment_bias == 1:
-                final_action = "LONG"
-            elif sentiment_bias == -1:
-                final_action = "HOLD"  # conflicting signals
-        elif tech_bias == "BEARISH":
-            if sentiment_bias == -1:
-                final_action = "SHORT"
-            elif sentiment_bias == 1:
-                final_action = "HOLD"
+        combined_conf = confidence * 0.4 + \
+            (0.6 if tech_bias in ["BULLISH", "BEARISH"] else 0.3)
+        if tech_bias == "BULLISH" and sentiment_bias == 1:
+            final_action = "LONG"
+            combined_conf *= 1.2
+        elif tech_bias == "BEARISH" and sentiment_bias == -1:
+            final_action = "SHORT"
+            combined_conf *= 1.2
         elif tech_bias == "NEUTRAL":
-            # rely mainly on news
             final_action = "LONG" if sentiment_bias == 1 else "SHORT" if sentiment_bias == -1 else "HOLD"
 
         if debug:
@@ -67,6 +51,7 @@ class DecisionAgent:
             print(
                 f"📰 Sentiment: {sentiment_label.upper()} (confidence={confidence:.4f})")
             print(f"📈 Technical Bias: {tech_bias} [{timeframe}]")
-            print(f"⚙️  Combined Decision: {final_action}")
+            print(
+                f"⚙️ Combined Decision: {final_action} (confidence={combined_conf:.4f})")
 
-        return final_action, confidence, sentiment_label, tech_bias, timeframe
+        return final_action, combined_conf, sentiment_label, tech_bias, timeframe
